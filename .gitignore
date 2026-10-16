@@ -1,0 +1,12 @@
+# Compiled build - published as a GitHub Release instead
+SnagDL.exe
+
+# Tools fetched by Get Tools
+yt-dlp.exe
+ffmpeg.exe
+ffprobe.exe
+node.exe
+
+# Runtime output
+last_download.log
+*.part
