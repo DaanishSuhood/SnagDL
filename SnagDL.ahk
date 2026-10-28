@@ -3,7 +3,7 @@
 
 ;@Ahk2Exe-SetName SnagDL
 ;@Ahk2Exe-SetDescription SnagDL
-;@Ahk2Exe-SetVersion 1.0.0
+;@Ahk2Exe-SetVersion 1.0.1
 ;@Ahk2Exe-SetMainIcon SnagDL.ico
 
 YtDlpPath := A_ScriptDir "\yt-dlp.exe"
@@ -89,9 +89,17 @@ ThumbPic := MainGui.AddPicture("xm y+10 w128 h72 +Border")
 TitleText := MainGui.AddText("x+10 yp w548", "No video loaded")
 DetailText := MainGui.AddText("xp y+4 w548 cGray", "Paste a URL and press Fetch info.")
 
+; Clearing the picture collapses the control to 0x0, and an image loaded into it
+; then shows at full size over the whole window. So every image is loaded at the
+; box's size inside the border, which *w/*h take in real pixels, not DPI-scaled.
+rc := Buffer(16)
+DllCall("GetClientRect", "Ptr", ThumbPic.Hwnd, "Ptr", rc)
+ThumbPxW := NumGet(rc, 8, "Int")
+ThumbPxH := NumGet(rc, 12, "Int")
+
 ; The text block is shorter than the thumbnail, so the next row is placed
 ; against the picture rather than against the last control added.
-ThumbPic.GetPos(, &thumbY, , &thumbH)
+ThumbPic.GetPos(, &thumbY, &thumbW, &thumbH)
 MainGui.AddText("xm y" (thumbY + thumbH + 14) " w66", "Save to:")
 OutEdit := MainGui.AddEdit("x+6 yp-3 w528", DefaultOutDir)
 BrowseBtn := MainGui.AddButton("x+8 yp-1 w70 h26", "Browse...")
@@ -261,6 +269,8 @@ StartProbe(*) {
     ; A fresh filename each time - GDI+ keeps the loaded image open, so the
     ; previous thumbnail cannot be overwritten in place.
     try ThumbPic.Value := ""
+    ; Clearing leaves the control 0x0, so the empty box is put back while fetching.
+    ThumbPic.Move(, , thumbW, thumbH)
     ClearThumb()
     ThumbPath := A_Temp "\SnagDL-thumb-" A_TickCount ".jpg"
 
@@ -372,7 +382,7 @@ ParseProbe(text) {
     }
 
     if thumbFile != ""
-        ThumbPic.Value := thumbFile
+        ThumbPic.Value := "*w" ThumbPxW " *h" ThumbPxH " " thumbFile
 
     TitleText.Text := ProbeTitle
     detail := ProbeUploader
@@ -1106,7 +1116,11 @@ ProbeScriptText() {
         "",
         "try {",
         "    $a = @('--js-runtimes', $Js, '--no-playlist', '-J')",
+        "    # yt-dlp prints warnings to stderr even when it succeeds, and 5.1 turns",
+        "    # each one into a terminating error under Stop, so only here it is relaxed.",
+        "    $ErrorActionPreference = 'Continue'",
         "    $raw = & $Exe @a $Url 2>$null",
+        "    $ErrorActionPreference = 'Stop'",
         "    if ($LASTEXITCODE -ne 0 -or -not $raw) { throw 'yt-dlp could not read that URL' }",
         "    $d = ($raw -join '') | ConvertFrom-Json",
         "    Emit ('TITLE|' + (Clean $d.title))",
