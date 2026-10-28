@@ -7,8 +7,9 @@ It shows you what a video offers before you commit to a download, and estimates 
 you change the settings. It also fetches and updates its own copies of `yt-dlp.exe`, `ffmpeg.exe`,
 and Node.js, so there is nothing to install by hand.
 
-Script: [`SnagDL.ahk`](SnagDL.ahk), or the compiled `SnagDL.exe` from the
-[latest release](https://github.com/DaanishSuhood/SnagDL/releases/latest), which needs no AutoHotkey install.
+Script: [`SnagDL.ahk`](SnagDL.ahk), or from the
+[latest release](https://github.com/DaanishSuhood/SnagDL/releases/latest) either the installer
+`SnagDL-Setup-<version>.exe` or the portable `SnagDL.exe`. Neither needs an AutoHotkey install.
 
 ---
 
@@ -48,10 +49,38 @@ The status line always tells you which tools are missing.
 
 ---
 
+## Installing
+
+1. Download `SnagDL-Setup-<version>.exe` from the
+   [latest release](https://github.com/DaanishSuhood/SnagDL/releases/latest).
+2. Run it. It installs for your user account only, so there is no UAC prompt.
+3. Choose the install folder, which defaults to `%LOCALAPPDATA%\Programs\SnagDL`. Keep or untick
+   **Create a desktop shortcut** and **Create a Start menu shortcut**; both are ticked by default.
+4. On the last page, tick **Launch SnagDL** to start it right away.
+
+**No install needed?** The release also has a portable `SnagDL.exe`. Put it in its own folder, since
+the tools it fetches are saved beside it. Or run `SnagDL.ahk` directly with AutoHotkey v2.
+
+To upgrade, run a newer setup over the existing install; there's no need to uninstall first, and the
+tools already fetched are kept.
+
+**Uninstalling:** go to **Settings → Apps → Installed apps → SnagDL → Uninstall**. This removes the
+program, both shortcuts, and the yt-dlp, ffmpeg and Node.js copies that **Get Tools** fetched.
+Your downloaded videos are never touched.
+
+> **"Windows protected your PC" warning:** SnagDL isn't code-signed, so SmartScreen may warn about
+> it. Click **More info → Run anyway** to continue. To check that your download is the genuine file,
+> compare it with the release's `SHA256SUMS.txt`: in PowerShell, run
+> `Get-FileHash .\SnagDL-Setup-<version>.exe` and check that the hash matches.
+
+The installer is per-user on purpose: SnagDL saves its tools and log beside its own exe, so it has to
+live somewhere you can write to, which `Program Files` is not.
+
+---
+
 ## Getting started
 
-1. Run `SnagDL.ahk`, or download `SnagDL.exe` from
-   [Releases](https://github.com/DaanishSuhood/SnagDL/releases/latest) and put it in its own folder.
+1. Start SnagDL from the Start menu or desktop.
 2. Press **Get Tools** and wait. ffmpeg is a ~150 MB download, so this takes a few minutes the first
    time. It only ever downloads what is actually missing.
 3. Paste a URL into **Video URL** and press **Fetch info**.
@@ -203,6 +232,22 @@ a lone copy of the script can still fetch its own tools and read format lists.
   the `node.exe` beside the script is the one in use.
 - **Process tracking** — each background job (download, update, probe, tools) is tracked by PID, so
   the buttons can refuse to start a second one or to overwrite a locked `yt-dlp.exe`.
+
+---
+
+## Building a release
+
+Needs [AutoHotkey v2](https://www.autohotkey.com/) (for Ahk2Exe) and
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install --id JRSoftware.InnoSetup -e`). Then:
+
+```powershell
+.\publish.ps1                 # artifacts\publish\SnagDL.exe + artifacts\installer\SnagDL-Setup-<version>.exe
+.\publish.ps1 -SkipInstaller  # only the .exe
+```
+
+Either way it also writes `artifacts\SHA256SUMS.txt` to attach to the release. The installer is built
+from [`installer\SnagDL.iss`](installer/SnagDL.iss). The version comes from the
+`;@Ahk2Exe-SetVersion` line at the top of `SnagDL.ahk`, so bump it there before a release.
 
 ---
 

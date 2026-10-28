@@ -1,6 +1,9 @@
 # Compiled build - published as a GitHub Release instead
 SnagDL.exe
 
+# Output of publish.ps1 - also published as a Release
+artifacts/
+
 # Tools fetched by Get Tools
 yt-dlp.exe
 ffmpeg.exe

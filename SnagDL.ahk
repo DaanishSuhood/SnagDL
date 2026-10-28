@@ -3,6 +3,7 @@
 
 ;@Ahk2Exe-SetName SnagDL
 ;@Ahk2Exe-SetDescription SnagDL
+;@Ahk2Exe-SetVersion 1.0.1
 ;@Ahk2Exe-SetMainIcon SnagDL.ico
 
 YtDlpPath := A_ScriptDir "\yt-dlp.exe"
