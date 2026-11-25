@@ -5,7 +5,7 @@
 
 It shows you what a video offers before you commit to a download, and estimates the output size as
 you change the settings. It also fetches and updates its own copies of `yt-dlp.exe`, `ffmpeg.exe`,
-and Node.js, so there is nothing to install by hand.
+and Node.js, so there is nothing to install by hand, and it updates itself from this repo's releases.
 
 Script: [`SnagDL.ahk`](SnagDL.ahk), or from the
 [latest release](https://github.com/DaanishSuhood/SnagDL/releases/latest) either the installer
@@ -61,8 +61,8 @@ The status line always tells you which tools are missing.
 **No install needed?** The release also has a portable `SnagDL.exe`. Put it in its own folder, since
 the tools it fetches are saved beside it. Or run `SnagDL.ahk` directly with AutoHotkey v2.
 
-To upgrade, run a newer setup over the existing install; there's no need to uninstall first, and the
-tools already fetched are kept.
+To upgrade, let SnagDL do it (see [Updating SnagDL](#updating-snagdl)), or run a newer setup over the
+existing install; there's no need to uninstall first, and the tools already fetched are kept.
 
 **Uninstalling:** go to **Settings → Apps → Installed apps → SnagDL → Uninstall**. This removes the
 program, both shortcuts, and the yt-dlp, ffmpeg and Node.js copies that **Get Tools** fetched.
@@ -114,7 +114,7 @@ only**, even with **Whole playlist** ticked.
 | **Whole playlist** | `--yes-playlist` |
 | **SponsorBlock** | `--sponsorblock-remove default` |
 | **Clip section** | `--download-sections` — type just `1:30-4:00` |
-| **Cookies from** | `--cookies-from-browser` for age-gated or members-only videos. Close the browser first — a locked cookie database cannot be read |
+| **Cookies from** | `--cookies-from-browser` for age-gated or members-only videos. The first pick in each run asks for confirmation, since yt-dlp then downloads as your logged-in account. Firefox works best: Chrome, Edge and Brave must be fully closed, and Chrome's cookies often cannot be decrypted on Windows at all |
 
 The subtitle language list is built from the probe, with manual tracks first and the (often 150+)
 auto-generated ones below a divider. English is preselected when present. Subtitles are unavailable
@@ -147,12 +147,43 @@ download yt-dlp would not actually perform.
 - **Update yt-dlp** — `--update-to nightly`, because YouTube extractor fixes land there well before
   stable. No restart needed.
 - **Get Tools** — downloads only the missing tools.
+- **Update SnagDL** — checks for a newer SnagDL release and offers to install it; see
+  [Updating SnagDL](#updating-snagdl).
 - **Show log** — folds the full yt-dlp output in and out. The window grows by exactly the log's
   height rather than the log stealing space from other rows, which is what keeps it short at rest.
   It opens by itself whenever something fails.
 
 During post-processing (merging, converting, embedding) the progress bar switches to a marquee, since
 yt-dlp reports no percentage for those stages.
+
+---
+
+## Updating SnagDL
+
+Every time SnagDL starts, it asks the GitHub API for the
+[latest release](https://github.com/DaanishSuhood/SnagDL/releases/latest) (drafts and pre-releases
+are skipped). If that release is newer, it asks whether to update, and the status line shows
+`SnagDL <version> available`. It never asks in the middle of a download; press **Update SnagDL** later
+instead. That button also runs the check by hand.
+
+Saying yes:
+
+1. SnagDL downloads the release file that matches how it was installed, plus `SHA256SUMS.txt`, and
+   checks the file's hash. A missing or mismatched checksum stops the update, and nothing is changed.
+2. Only then does SnagDL close and hand over to a helper, which:
+   - **Installed copy**: runs `SnagDL-Setup-<version>.exe /SILENT`. It upgrades in place, keeping the
+     folder, the shortcut choices, and the fetched tools.
+   - **Portable copy**: moves the old `SnagDL.exe` aside, copies the new one in, and deletes the old
+     one. If the copy fails, the old exe is put back.
+3. The helper starts the new SnagDL. If anything failed, it starts the old copy again and shows the
+   error.
+
+A copy counts as installed when the installer's uninstall entry points at the folder it is running
+from; anything else is treated as portable. Running `SnagDL.ahk` as a script only offers to open the
+release page, since a script has no exe to swap (`git pull` updates a checkout).
+
+The update is refused while a download, **Fetch info**, **Update yt-dlp**, or **Get Tools** is running,
+since SnagDL has to close.
 
 ---
 
@@ -180,6 +211,10 @@ Sizes come from the probe, not from a trial download, so treat them as a close g
 | `%TEMP%\SnagDL-probe.txt` | The probe's pipe-delimited output |
 | `%TEMP%\SnagDL-node-version.txt` | `node --version` output, read and deleted during the tool check |
 | `%TEMP%\SnagDL-thumb-<ticks>.jpg` | Cached thumbnail, deleted on the next fetch and on exit |
+| `%TEMP%\SnagDL-update-check.ps1` / `.txt` | The update check and its result, rewritten at every start |
+| `%TEMP%\SnagDL-self-update.ps1` | The self-updater, written when an update starts |
+| `%TEMP%\SnagDL-self-update.log` | Output of the last self-update. Check here if an update failed |
+| `%TEMP%\SnagDL-self-update\` | The downloaded update, deleted once it is applied |
 
 Output filenames are `%(title)s.%(ext)s`, or for a playlist
 `%(playlist_title)s\%(playlist_index)s - %(title)s.%(ext)s`.
@@ -199,7 +234,10 @@ The status line and the hint under the progress bar name the likely cause on fai
 | `Unsupported URL` | yt-dlp cannot handle that URL | — |
 | `Private video` / `Video unavailable` | Private, removed, or region-locked | — |
 | `ffmpeg not found` | ffmpeg missing | **Get Tools** |
-| cookie read failure | Cookies could not be read | Close the browser, or set Cookies from to None |
+| `Failed to decrypt with DPAPI` | The browser's cookies are encrypted so yt-dlp cannot read them | Log in with Firefox and pick it, or set Cookies from to None |
+| `Could not copy Chrome cookie database` | The browser (Chrome, Edge or Brave) is still open | Close it completely, including from the system tray |
+| `could not find … cookies database` | No cookies for that browser | Check it is installed and logged in to the site |
+| other cookie read failure | Cookies could not be read | Close the browser, or set Cookies from to None |
 
 Other things worth knowing:
 
@@ -217,8 +255,9 @@ Other things worth knowing:
 
 ## How it works
 
-Everything is one `.ahk` file — the two PowerShell helpers are written out to `%TEMP%` at runtime, so
-a lone copy of the script can still fetch its own tools and read format lists.
+Everything is one `.ahk` file — the PowerShell helpers (probe, tool downloader, update check,
+self-updater) are written out to `%TEMP%` at runtime, so a lone copy of the script can still fetch
+its own tools and read format lists.
 
 - **Probe** — PowerShell runs `yt-dlp -J`, then flattens the JSON into pipe-delimited lines
   (`TITLE|`, `DURATION|`, `FMT|id|ext|height|fps|vcodec|acodec|size|exact|kind|bitrate`, `SUB|`,
@@ -247,7 +286,25 @@ Needs [AutoHotkey v2](https://www.autohotkey.com/) (for Ahk2Exe) and
 
 Either way it also writes `artifacts\SHA256SUMS.txt` to attach to the release. The installer is built
 from [`installer\SnagDL.iss`](installer/SnagDL.iss). The version comes from the
-`;@Ahk2Exe-SetVersion` line at the top of `SnagDL.ahk`, so bump it there before a release.
+`AppVersion := "x.y.z"` line at the top of `SnagDL.ahk`, so bump it there before a release. Ahk2Exe
+stamps the exe from that same line, and `publish.ps1` checks that the two agree.
+
+**Update SnagDL depends on the release layout**, so every release needs:
+
+| What | Why |
+| --- | --- |
+| Tag `v<version>`, matching `AppVersion` | Compared with the running version |
+| A published, non-pre-release release | `releases/latest` ignores drafts and pre-releases |
+| `SnagDL.exe` | What portable copies download |
+| `SnagDL-Setup-<version>.exe` | What installed copies download |
+| `SHA256SUMS.txt` listing both | An update whose file is not listed, or does not match, is refused |
+
+```powershell
+gh release create v1.1.0 artifacts\publish\SnagDL.exe artifacts\installer\SnagDL-Setup-1.1.0.exe artifacts\SHA256SUMS.txt
+```
+
+Copies older than the first release with **Update SnagDL** (1.0.0 and earlier) cannot update themselves.
+Their users need to download that release once by hand.
 
 ---
 
@@ -261,7 +318,7 @@ from [`installer\SnagDL.iss`](installer/SnagDL.iss). The version comes from the
   download in progress, for the same reason.
 - The portable `node.exe` is not updated by **Update yt-dlp**. Delete it and press **Get Tools** to
   fetch the current LTS.
-- Settings are not saved between runs.
+- Settings are not saved between runs, so the update check at start-up cannot be turned off.
 - No global hotkeys; it is a GUI application only.
 - Windows only.
 

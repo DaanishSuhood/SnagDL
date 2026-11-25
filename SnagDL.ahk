@@ -3,8 +3,19 @@
 
 ;@Ahk2Exe-SetName SnagDL
 ;@Ahk2Exe-SetDescription SnagDL
-;@Ahk2Exe-SetVersion 1.0.0
 ;@Ahk2Exe-SetMainIcon SnagDL.ico
+
+; The one place the version is set: Ahk2Exe stamps it into the exe from the line
+; below, publish.ps1 names the installer from it, and the update check compares
+; it with the latest GitHub release. Keep it directly above the Let line.
+AppVersion := "1.1.0"
+;@Ahk2Exe-Let U_version = %A_PriorLine~U)^(.+"){1}(.+)".*$~$2%
+;@Ahk2Exe-SetVersion %U_version%
+
+AppRepo := "DaanishSuhood/SnagDL"
+; The installer's AppId, which names its uninstall key - how an installed copy
+; tells itself apart from a portable one.
+InstallerKey := "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{CF8E1262-AE49-435E-84DB-A8033DE48FB9}_is1"
 
 YtDlpPath := A_ScriptDir "\yt-dlp.exe"
 FfmpegPath := A_ScriptDir "\ffmpeg.exe"
@@ -12,6 +23,9 @@ FfprobePath := A_ScriptDir "\ffprobe.exe"
 NodePath := A_ScriptDir "\node.exe"
 LogPath := A_ScriptDir "\last_download.log"
 ProbeOutPath := A_Temp "\SnagDL-probe.txt"
+AppCheckOutPath := A_Temp "\SnagDL-update-check.txt"
+AppUpdateLogPath := A_Temp "\SnagDL-self-update.log"
+AppUpdateWorkDir := A_Temp "\SnagDL-self-update"
 DefaultOutDir := GetDownloadsDir()
 
 if !DirExist(DefaultOutDir)
@@ -32,7 +46,18 @@ CurrentPID := 0
 UpdatePID := 0
 ToolsPID := 0
 ProbePID := 0
+AppCheckPID := 0
+AppUpdatePID := 0
 IsConverting := false
+
+; The newer SnagDL release the last check found ("" when there is none), its
+; tag as GitHub spells it, and its release page. AppCheckManual is set when the
+; button asked, so only that check reports "up to date" or a failure.
+AppLatest := ""
+AppLatestTag := ""
+AppLatestPage := ""
+AppCheckManual := false
+UpdateNote := ""
 
 ; The Node.js that yt-dlp solves YouTube's JS challenges with: NodePath, "node"
 ; for one on PATH, or "" when neither is usable. Set by CheckTools.
@@ -41,6 +66,11 @@ NodeExe := ""
 ; Host of the URL being downloaded, for failure hints. Captured at start, since
 ; the URL box stays editable while a download runs.
 DownloadSite := ""
+; The browser cookies came from, for the same reason ("" for none).
+DownloadBrowser := ""
+
+; Set once the cookie warning has been accepted, so it is shown once per run.
+CookiesConfirmed := false
 
 ; Set while a kill is in flight, so the poll that sees the process gone reports
 ; a cancellation instead of reading the truncated log as a failure.
@@ -138,6 +168,7 @@ MainGui.AddText("x+18 yp w84", "Cookies from:")
 CookieDDL := MainGui.AddDropDownList("x+4 yp-4 w110 Choose1", [
     "None", "chrome", "edge", "firefox", "brave"
 ])
+CookieDDL.OnEvent("Change", CookiesChanged)
 
 ; ---------- Actions ----------
 EstText := MainGui.AddText("xm y+12 w688", "Estimated size: press Fetch info")
@@ -159,6 +190,9 @@ UpdateBtn.OnEvent("Click", UpdateYtDlp)
 GetToolsBtn := MainGui.AddButton("x+10 yp w100 h32", "Get Tools")
 GetToolsBtn.OnEvent("Click", GetTools)
 
+AppUpdateBtn := MainGui.AddButton("x+10 yp w114 h32", "Update SnagDL")
+AppUpdateBtn.OnEvent("Click", AppUpdateClicked)
+
 ; Status and the tool inventory share one line; the log is folded away until
 ; it is wanted, which is usually only when something has gone wrong.
 StatusText := MainGui.AddText("xm y+10 w570", "Idle")
@@ -178,6 +212,7 @@ BaseClientH := ptY + ptH + 10
 MainGui.Opt("+MinSize700x" BaseClientH)
 MainGui.Show("w708 h" BaseClientH)
 CheckTools()
+CheckAppUpdate(false)
 
 GuiResize(GuiObj, MinMax, Width, Height) {
     if MinMax = -1
@@ -215,7 +250,11 @@ SetStatus(msg := "") {
     global CurrentStatus
     if msg != ""
         CurrentStatus := msg
-    StatusText.Text := ToolsNote = "" ? CurrentStatus : CurrentStatus "   -   " ToolsNote
+    text := CurrentStatus
+    for note in [ToolsNote, UpdateNote]
+        if note != ""
+            text .= "   -   " note
+    StatusText.Text := text
 }
 
 BrowseFolder(*) {
@@ -236,6 +275,35 @@ ModeChanged(*) {
         SubsChk.Value := 0
     SubLangDDL.Enabled := SubsChk.Enabled && SubsChk.Value
     RecalcEstimate()
+}
+
+; Cookies make yt-dlp download as the user's own account, which a dropdown does
+; not make obvious, so the first pick in a run asks first. Chromium browsers also
+; lock and encrypt their cookies on Windows, which is the usual reason it fails.
+CookiesChanged(*) {
+    global CookiesConfirmed
+
+    if CookieDDL.Text = "None" || CookiesConfirmed
+        return
+
+    name := BrowserName(CookieDDL.Text)
+    msg := "Cookies let yt-dlp download as your logged-in account, for age-restricted or "
+        . "members-only videos. Only use it when a video needs it - sites can flag accounts "
+        . "used with downloaders."
+    if CookieDDL.Text != "firefox"
+        msg .= "`n`nClose " name " completely first, or its cookies cannot be read. Even then, "
+            . name " often encrypts them in a way yt-dlp cannot read on Windows - Firefox works best."
+    msg .= "`n`nUse cookies from " name "?"
+
+    if MsgBox(msg, "SnagDL", "YesNo Icon! Owner" MainGui.Hwnd) = "Yes"
+        CookiesConfirmed := true
+    else
+        CookieDDL.Choose(1)
+}
+
+; "chrome" -> "Chrome", for messages; the list keeps yt-dlp's own spelling.
+BrowserName(browser) {
+    return browser = "" ? "the browser" : StrTitle(browser)
 }
 
 ; ============================ Probe ============================
@@ -669,7 +737,7 @@ BuildDownloadArgs() {
 }
 
 StartDownload(*) {
-    global CurrentPID, IsConverting, Cancelling, DownloadSite
+    global CurrentPID, IsConverting, Cancelling, DownloadSite, DownloadBrowser
 
     if !FileExist(YtDlpPath) {
         MsgBox("yt-dlp.exe is missing. Press Get Tools to fetch it.", "SnagDL", "Icon!")
@@ -718,6 +786,7 @@ StartDownload(*) {
 
     CurrentPID := pid
     DownloadSite := SiteName(url)
+    DownloadBrowser := CookieDDL.Text = "None" ? "" : CookieDDL.Text
     Cancelling := false
     CancelBtn.Enabled := true
     SetStatus("Downloading...")
@@ -832,7 +901,7 @@ PollDownload() {
         logText := FileExist(LogPath) ? FileRead(LogPath) : ""
         if InStr(logText, "ERROR") {
             SetStatus("Failed")
-            ProgressText.Text := FailureHint(logText, DownloadSite)
+            ProgressText.Text := FailureHint(logText, DownloadSite, DownloadBrowser)
             ToggleLog(true)
         } else {
             ProgressBar.Value := 100
@@ -932,7 +1001,16 @@ SiteName(url) {
     return "The site"
 }
 
-FailureHint(logText, site) {
+FailureHint(logText, site, browser := "") {
+    ; Cookie errors end the run before anything is fetched, so they come first.
+    ; yt-dlp says "Chrome" in the copy error for every Chromium browser.
+    name := BrowserName(browser)
+    if InStr(logText, "Failed to decrypt with DPAPI")
+        return name "'s cookies are encrypted so yt-dlp cannot read them - use Firefox, or pick None."
+    if InStr(logText, "Could not copy Chrome cookie database")
+        return name " is still open - close it completely (check the system tray), then try again."
+    if InStr(logText, "could not find") && InStr(logText, "cookies database")
+        return "No " name " cookies were found - is it installed, and logged in to the site?"
     if InStr(logText, "HTTP Error 403")
         return site " blocked the stream - press Update yt-dlp, then try again."
     if InStr(logText, "No supported JavaScript runtime")
@@ -1091,6 +1169,253 @@ PollTools() {
         CheckTools()
         ToolsPID := 0
     }
+}
+
+; ============================ SnagDL updates ============================
+; A check runs at every start and asks the GitHub API for the latest release. An
+; update downloads the matching asset, checks it against the release's
+; SHA256SUMS.txt while SnagDL is still open, and only then hands over to a
+; helper that waits for SnagDL to close, swaps it, and starts the new version.
+
+AppUpdateClicked(*) {
+    if AppUpdatePID && ProcessExist(AppUpdatePID) {
+        MsgBox("SnagDL is already downloading its update.", "SnagDL", "Icon!")
+        return
+    }
+    if AppLatest != ""
+        OfferAppUpdate(true)
+    else
+        CheckAppUpdate(true)
+}
+
+CheckAppUpdate(manual) {
+    global AppCheckPID, AppCheckManual
+
+    if AppCheckPID && ProcessExist(AppCheckPID) {
+        ; A button press during the start-up check takes over its reporting.
+        AppCheckManual := AppCheckManual || manual
+        return
+    }
+
+    scriptPath := WriteHelperScript(A_Temp "\SnagDL-update-check.ps1", AppCheckScriptText())
+    if scriptPath = ""
+        return
+
+    if FileExist(AppCheckOutPath)
+        try FileDelete(AppCheckOutPath)
+
+    cmd := 'cmd.exe /c ""powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "' scriptPath '"'
+        . ' -Repo "' AppRepo '" -Out "' AppCheckOutPath '" > nul 2>&1"'
+
+    try {
+        Run(cmd, A_Temp, "Hide", &pid)
+    } catch as err {
+        if manual
+            MsgBox("Failed to start the update check: " err.Message, "SnagDL", "IconX")
+        return
+    }
+
+    AppCheckPID := pid
+    AppCheckManual := manual
+    if manual {
+        AppUpdateBtn.Enabled := false
+        SetStatus("Checking for a SnagDL update...")
+    }
+    SetTimer(PollAppCheck, 500)
+}
+
+PollAppCheck() {
+    global AppCheckPID, AppLatest, AppLatestTag, AppLatestPage, UpdateNote
+
+    if ProcessExist(AppCheckPID)
+        return
+
+    SetTimer(PollAppCheck, 0)
+    AppCheckPID := 0
+    AppUpdateBtn.Enabled := true
+
+    latest := "", tag := "", page := "", errMsg := ""
+    try {
+        Loop Parse FileRead(AppCheckOutPath, "UTF-8"), "`n", "`r" {
+            parts := StrSplit(A_LoopField, "|", , 2)
+            if parts.Length < 2
+                continue
+            switch parts[1] {
+                case "TAG": tag := parts[2]
+                case "PAGE": page := parts[2]
+                case "CHECK-ERR": errMsg := parts[2]
+            }
+        }
+    } catch
+        errMsg := "the check produced no output - is PowerShell blocked?"
+
+    ; Tags are "v1.2.3"; anything that is not a plain version is not trusted.
+    if errMsg = "" {
+        latest := RegExReplace(tag, "^[vV]")
+        if !RegExMatch(latest, "^\d+(\.\d+){0,3}$")
+            errMsg := "the latest release has an unexpected tag (" tag ")"
+    }
+
+    if errMsg != "" {
+        if AppCheckManual {
+            SetStatus("Update check failed")
+            MsgBox("Could not check for a SnagDL update:`n" errMsg, "SnagDL", "IconX")
+        }
+        return
+    }
+
+    if VerCompare(latest, AppVersion) <= 0 {
+        AppLatest := ""
+        UpdateNote := ""
+        if AppCheckManual {
+            SetStatus("SnagDL is up to date")
+            MsgBox("SnagDL " AppVersion " is the latest version.", "SnagDL", "Iconi")
+        }
+        return
+    }
+
+    AppLatest := latest
+    AppLatestTag := tag
+    AppLatestPage := page
+    UpdateNote := "SnagDL " latest " available"
+    SetStatus()
+    OfferAppUpdate(AppCheckManual)
+}
+
+; The start-up check only asks while nothing is running, so it never pops up in
+; the middle of a download; the status line and the button still carry it.
+OfferAppUpdate(manual) {
+    busy := AppBusyWith()
+    if busy != "" {
+        if manual
+            MsgBox("SnagDL " AppLatest " is available. Finish the current " busy
+                . " first, then press Update SnagDL.", "SnagDL", "Iconi")
+        return
+    }
+
+    ; A script run by AutoHotkey has no exe to swap - it is usually a git
+    ; checkout, so it gets pointed at the release instead.
+    if !A_IsCompiled {
+        if MsgBox("SnagDL " AppLatest " is available (this is " AppVersion ", running as a script).`n`n"
+            . "Open the release page?", "SnagDL", "YesNo Iconi") = "Yes"
+            Run(AppLatestPage != "" ? AppLatestPage : "https://github.com/" AppRepo "/releases/latest")
+        return
+    }
+
+    how := IsInstalledCopy() ? "runs its installer" : "replaces SnagDL.exe"
+    if MsgBox("SnagDL " AppLatest " is available - you have " AppVersion ".`n`n"
+        . "Update now? SnagDL downloads it, checks it, then closes, " how ", and reopens.",
+        "SnagDL", "YesNo Iconi") = "Yes"
+        StartAppUpdate()
+}
+
+; What would be cut off by SnagDL closing, or "" when nothing is.
+AppBusyWith() {
+    if CurrentPID && ProcessExist(CurrentPID)
+        return "download"
+    if ProbePID && ProcessExist(ProbePID)
+        return "Fetch info"
+    if UpdatePID && ProcessExist(UpdatePID)
+        return "yt-dlp update"
+    if ToolsPID && ProcessExist(ToolsPID)
+        return "tool download"
+    return ""
+}
+
+; Installed copies go through the installer, so the uninstaller and its record
+; stay in step; anything else is a portable copy and is swapped in place.
+IsInstalledCopy() {
+    try {
+        loc := RegRead(InstallerKey, "InstallLocation")
+        return RTrim(loc, "\") = A_ScriptDir
+    }
+    return false
+}
+
+; Everything that could start a job is greyed out while the update downloads,
+; since SnagDL closes the moment it is ready.
+SetJobButtons(enabled) {
+    for btn in [FetchBtn, DownloadBtn, UpdateBtn, GetToolsBtn, AppUpdateBtn]
+        btn.Enabled := enabled
+}
+
+StartAppUpdate() {
+    global AppUpdatePID
+
+    busy := AppBusyWith()
+    if busy != "" {
+        MsgBox("Finish the current " busy " first.", "SnagDL", "Icon!")
+        return
+    }
+
+    scriptPath := WriteHelperScript(A_Temp "\SnagDL-self-update.ps1", AppUpdateScriptText())
+    if scriptPath = ""
+        return
+
+    mode := IsInstalledCopy() ? "installer" : "portable"
+    cmd := 'cmd.exe /c ""powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "' scriptPath '"'
+        . ' -Stage download -Mode ' mode ' -Repo "' AppRepo '" -Tag "' AppLatestTag '"'
+        . ' -Work "' AppUpdateWorkDir '" > "' AppUpdateLogPath '" 2>&1"'
+
+    try {
+        Run(cmd, A_Temp, "Hide", &pid)
+    } catch as err {
+        MsgBox("Failed to start the SnagDL update: " err.Message, "SnagDL", "IconX")
+        return
+    }
+
+    AppUpdatePID := pid
+    SetJobButtons(false)
+    SetStatus("Downloading SnagDL " AppLatest "...")
+    ProgressBar.Value := 0
+    ProgressText.Text := "SnagDL closes and reopens by itself once the update is downloaded and checked."
+    StartMarquee()
+    SetTimer(PollAppUpdate, 500)
+}
+
+PollAppUpdate() {
+    global AppUpdatePID
+
+    if ProcessExist(AppUpdatePID)
+        return
+
+    SetTimer(PollAppUpdate, 0)
+    StopMarquee()
+    AppUpdatePID := 0
+
+    logText := ""
+    try logText := FileRead(AppUpdateLogPath)
+    ready := RegExMatch(logText, "m)^UPDATE-READY\|(.+?)\s*$", &m) ? m[1] : ""
+
+    if ready = "" || !FileExist(ready) {
+        SetJobButtons(true)
+        SetStatus("SnagDL update failed")
+        LogEdit.Text := logText
+        ToggleLog(true)
+        ProgressText.Text := "The update was not applied - SnagDL " AppVersion " is unchanged."
+        return
+    }
+
+    ; From here the helper carries on alone: it waits for this process to end,
+    ; so SnagDL must close right after starting it.
+    mode := IsInstalledCopy() ? "installer" : "portable"
+    cmd := 'cmd.exe /c ""powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "'
+        . A_Temp '\SnagDL-self-update.ps1" -Stage apply -Mode ' mode
+        . ' -File "' ready '" -Exe "' A_ScriptFullPath '" -AppPid ' ProcessExist()
+        . ' -Work "' AppUpdateWorkDir '" >> "' AppUpdateLogPath '" 2>&1"'
+
+    try {
+        Run(cmd, A_Temp, "Hide")
+    } catch as err {
+        SetJobButtons(true)
+        SetStatus("SnagDL update failed")
+        MsgBox("Failed to start the SnagDL update: " err.Message, "SnagDL", "IconX")
+        return
+    }
+
+    SetStatus("Installing SnagDL " AppLatest "...")
+    ClearThumb()
+    ExitApp()
 }
 
 ; ============================ Helper scripts ============================
@@ -1257,6 +1582,138 @@ ToolsScriptText() {
         "}",
         "catch {",
         "    Write-Output ('ERROR: ' + $_.Exception.Message)",
+        "    exit 1",
+        "}"
+    ]
+    return JoinLines(lines)
+}
+
+AppCheckScriptText() {
+    lines := [
+        "param(",
+        "    [Parameter(Mandatory = $true)][string]$Repo,",
+        "    [Parameter(Mandatory = $true)][string]$Out",
+        ")",
+        "",
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+        "$lines = @()",
+        "try {",
+        "    # releases/latest skips drafts and pre-releases, so only a published",
+        "    # release is ever offered.",
+        "    $r = Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $Repo + '/releases/latest') -Headers @{ 'User-Agent' = 'SnagDL' } -TimeoutSec 20",
+        "    $lines += 'TAG|' + $r.tag_name",
+        "    $lines += 'PAGE|' + $r.html_url",
+        "}",
+        "catch { $lines += 'CHECK-ERR|' + ($_.Exception.Message -replace '[\r\n\|]', ' ') }",
+        "[IO.File]::WriteAllText($Out, ($lines -join [char]10), (New-Object Text.UTF8Encoding $false))"
+    ]
+    return JoinLines(lines)
+}
+
+; One script, two stages. download: fetch the release asset for this kind of
+; copy and check it against SHA256SUMS.txt, ending with UPDATE-READY|<file>.
+; apply: wait for SnagDL to exit, run the installer or swap the exe, restart it.
+; If apply fails, the old copy is started again and the error shown, since
+; SnagDL itself is no longer open to show it.
+AppUpdateScriptText() {
+    lines := [
+        "param(",
+        "    [Parameter(Mandatory = $true)][ValidateSet('download', 'apply')][string]$Stage,",
+        "    [Parameter(Mandatory = $true)][ValidateSet('installer', 'portable')][string]$Mode,",
+        "    [Parameter(Mandatory = $true)][string]$Work,",
+        "    [string]$Repo = '',",
+        "    [string]$Tag = '',",
+        "    [string]$File = '',",
+        "    [string]$Exe = '',",
+        "    [int]$AppPid = 0",
+        ")",
+        "",
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+        "$hdr = @{ 'User-Agent' = 'SnagDL' }",
+        "",
+        "if ($Stage -eq 'download') {",
+        "    try {",
+        "        $r = Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $Repo + '/releases/tags/' + $Tag) -Headers $hdr -TimeoutSec 30",
+        "        $pattern = if ($Mode -eq 'installer') { '^SnagDL-Setup-.+\.exe$' } else { '^SnagDL\.exe$' }",
+        "        $asset = $r.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1",
+        "        if (-not $asset) { throw ('release ' + $Tag + ' has no ' + $Mode + ' download') }",
+        "        $sums = $r.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1",
+        "        if (-not $sums) { throw ('release ' + $Tag + ' has no SHA256SUMS.txt to check the download against') }",
+        "",
+        "        if (Test-Path -LiteralPath $Work) { Remove-Item -LiteralPath $Work -Recurse -Force }",
+        "        New-Item -ItemType Directory -Path $Work | Out-Null",
+        "        $dl = Join-Path $Work $asset.name",
+        "        $sumFile = Join-Path $Work 'SHA256SUMS.txt'",
+        "",
+        "        Write-Output ('Downloading ' + $asset.name + ' from ' + $Tag + ' ...')",
+        "        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $dl -Headers $hdr -UseBasicParsing",
+        "        Invoke-WebRequest -Uri $sums.browser_download_url -OutFile $sumFile -Headers $hdr -UseBasicParsing",
+        "",
+        "        # sha256sum format: hash, two spaces (or space and *), file name.",
+        "        $expected = ''",
+        "        foreach ($line in Get-Content -LiteralPath $sumFile) {",
+        "            $p = $line.Trim() -split '\s+', 2",
+        "            if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq $asset.name) { $expected = $p[0].ToLowerInvariant() }",
+        "        }",
+        "        if (-not $expected) { throw ($asset.name + ' is not listed in SHA256SUMS.txt') }",
+        "        $actual = (Get-FileHash -LiteralPath $dl -Algorithm SHA256).Hash.ToLowerInvariant()",
+        "        if ($actual -ne $expected) { throw ('checksum mismatch for ' + $asset.name + ' - expected ' + $expected + ', got ' + $actual) }",
+        "        Write-Output ('Checksum OK: ' + $actual)",
+        "        Write-Output ('UPDATE-READY|' + $dl)",
+        "    }",
+        "    catch {",
+        "        Write-Output ('ERROR: ' + $_.Exception.Message)",
+        "        exit 1",
+        "    }",
+        "    exit 0",
+        "}",
+        "",
+        "try {",
+        "    Write-Output 'Waiting for SnagDL to close ...'",
+        "    try { Wait-Process -Id $AppPid -Timeout 30 -ErrorAction Stop } catch {}",
+        "",
+        "    if ($Mode -eq 'installer') {",
+        "        # Setup reuses the folder and the shortcut choices of the install it",
+        "        # upgrades; under /SILENT its own launch checkbox does not run.",
+        "        Write-Output 'Running the installer ...'",
+        "        $p = Start-Process -FilePath $File -ArgumentList '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL' -Wait -PassThru",
+        "        if ($p.ExitCode -ne 0) { throw ('Setup exited with code ' + $p.ExitCode) }",
+        "    }",
+        "    else {",
+        "        # The old exe is moved aside rather than overwritten, so a failed copy",
+        "        # can put it back. Windows can hold it for a moment after exit.",
+        "        $backup = $Exe + '.old'",
+        "        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }",
+        "        $moved = $false",
+        "        for ($i = 0; $i -lt 20 -and -not $moved; $i++) {",
+        "            try { Move-Item -LiteralPath $Exe -Destination $backup -Force; $moved = $true }",
+        "            catch { Start-Sleep -Milliseconds 500 }",
+        "        }",
+        "        if (-not $moved) { throw ($Exe + ' is still in use') }",
+        "        try { Copy-Item -LiteralPath $File -Destination $Exe -Force }",
+        "        catch {",
+        "            if (Test-Path -LiteralPath $Exe) { Remove-Item -LiteralPath $Exe -Force }",
+        "            Move-Item -LiteralPath $backup -Destination $Exe -Force",
+        "            throw",
+        "        }",
+        "        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue",
+        "    }",
+        "",
+        "    Write-Output 'Starting the new SnagDL ...'",
+        "    Start-Process -FilePath $Exe",
+        "    try { Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction Stop } catch {}",
+        "    Write-Output 'UPDATE-DONE'",
+        "}",
+        "catch {",
+        "    $msg = $_.Exception.Message",
+        "    Write-Output ('ERROR: ' + $msg)",
+        "    if ($Exe -and (Test-Path -LiteralPath $Exe)) { Start-Process -FilePath $Exe }",
+        "    Add-Type -AssemblyName System.Windows.Forms",
+        "    [void][Windows.Forms.MessageBox]::Show(('SnagDL could not update: ' + $msg + [Environment]::NewLine + [Environment]::NewLine + 'The log is at ' + (Join-Path $env:TEMP 'SnagDL-self-update.log')), 'SnagDL', 'OK', 'Error')",
         "    exit 1",
         "}"
     ]

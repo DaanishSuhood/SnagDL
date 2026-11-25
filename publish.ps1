@@ -3,7 +3,8 @@
 #                                    artifacts\installer\SnagDL-Setup-<version>.exe (Inno Setup installer)
 #   .\publish.ps1 -SkipInstaller  -> only the .exe
 # Either way it also writes artifacts\SHA256SUMS.txt, to publish with the release.
-# The version comes from the ;@Ahk2Exe-SetVersion line in SnagDL.ahk, so the exe and the installer always agree.
+# The version comes from the AppVersion line in SnagDL.ahk, so the exe, the installer and the update check always agree.
+# Publish both files and SHA256SUMS.txt under these names, tagged v<version>: Update SnagDL looks for exactly them.
 param(
     [switch]$SkipInstaller
 )
@@ -24,8 +25,8 @@ if (-not $ahk2exe) {
 $base = Join-Path (Split-Path (Split-Path $ahk2exe)) 'v2\AutoHotkey64.exe'
 if (-not (Test-Path $base)) { throw "AutoHotkey v2 (64-bit) was not found at $base." }
 
-$match = Select-String -LiteralPath $source -Pattern '^;@Ahk2Exe-SetVersion\s+(\S+)' | Select-Object -First 1
-if (-not $match) { throw 'SnagDL.ahk has no ;@Ahk2Exe-SetVersion line.' }
+$match = Select-String -LiteralPath $source -Pattern '^AppVersion\s*:=\s*"(\d+(\.\d+){0,3})"' | Select-Object -First 1
+if (-not $match) { throw 'SnagDL.ahk has no AppVersion := "x.y.z" line.' }
 $version = $match.Matches[0].Groups[1].Value
 
 if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
@@ -36,6 +37,9 @@ $p = Start-Process -FilePath $ahk2exe -Wait -PassThru -ArgumentList @(
     '/in', "`"$source`"", '/out', "`"$exe`"", '/base', "`"$base`"", '/silent', 'verbose'
 )
 if ($p.ExitCode -ne 0 -or -not (Test-Path $exe)) { throw "Compiling SnagDL.exe failed (exit code $($p.ExitCode))." }
+# The update check compares AppVersion with release tags, so the exe's own version must agree with it.
+$built = (Get-Item $exe).VersionInfo.ProductVersion
+if ($built -notlike "$version*") { throw "SnagDL.exe was stamped $built, not $version - is the ;@Ahk2Exe-Let line still right under AppVersion?" }
 
 if (-not $SkipInstaller) {
     $iscc = @(
