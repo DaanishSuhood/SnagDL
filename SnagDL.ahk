@@ -8,7 +8,7 @@
 ; The one place the version is set: Ahk2Exe stamps it into the exe from the line
 ; below, publish.ps1 names the installer from it, and the update check compares
 ; it with the latest GitHub release. Keep it directly above the Let line.
-AppVersion := "1.1.0"
+AppVersion := "1.1.1"
 ;@Ahk2Exe-Let U_version = %A_PriorLine~U)^(.+"){1}(.+)".*$~$2%
 ;@Ahk2Exe-SetVersion %U_version%
 
@@ -68,6 +68,9 @@ NodeExe := ""
 DownloadSite := ""
 ; The browser cookies came from, for the same reason ("" for none).
 DownloadBrowser := ""
+; The same two for Fetch info.
+ProbeSite := ""
+ProbeBrowser := ""
 
 ; Set once the cookie warning has been accepted, so it is shown once per run.
 CookiesConfirmed := false
@@ -117,7 +120,8 @@ FetchBtn.OnEvent("Click", StartProbe)
 
 ThumbPic := MainGui.AddPicture("xm y+10 w128 h72 +Border")
 TitleText := MainGui.AddText("x+10 yp w548", "No video loaded")
-DetailText := MainGui.AddText("xp y+4 w548 cGray", "Paste a URL and press Fetch info.")
+; Two lines tall, so a failure hint fits; the next row goes by the thumbnail, not this.
+DetailText := MainGui.AddText("xp y+4 w548 r2 cGray", "Paste a URL and press Fetch info.")
 
 ; Clearing the picture collapses the control to 0x0, and an image loaded into it
 ; then shows at full size over the whole window. So every image is loaded at the
@@ -309,7 +313,7 @@ BrowserName(browser) {
 ; ============================ Probe ============================
 
 StartProbe(*) {
-    global ProbePID, ThumbPath
+    global ProbePID, ThumbPath, ProbeSite, ProbeBrowser
 
     if !FileExist(YtDlpPath) {
         MsgBox("yt-dlp.exe is missing. Press Get Tools to fetch it.", "SnagDL", "Icon!")
@@ -342,9 +346,13 @@ StartProbe(*) {
     ClearThumb()
     ThumbPath := A_Temp "\SnagDL-thumb-" A_TickCount ".jpg"
 
+    ; Fetch info signs in the same way the download will, so age-restricted
+    ; videos and YouTube's bot check don't fail here but work there.
+    browser := CookieDDL.Text = "None" ? "" : CookieDDL.Text
     cmd := 'cmd.exe /c ""powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "' scriptPath '"'
         . ' -Exe "' YtDlpPath '" -Url "' url '" -Out "' ProbeOutPath '"'
         . ' -Js "' JsRuntimeSpec() '"'
+        . (browser != "" ? ' -Cookies "' browser '"' : "")
         . ' -Thumb "' ThumbPath '" > nul 2>&1"'
 
     try {
@@ -355,6 +363,8 @@ StartProbe(*) {
     }
 
     ProbePID := pid
+    ProbeSite := SiteName(url)
+    ProbeBrowser := browser
     FetchBtn.Enabled := false
     TitleText.Text := "Fetching info..."
     DetailText.Text := ""
@@ -402,6 +412,7 @@ ParseProbe(text) {
     ProbeDuration := 0
     ProbeUploader := ""
     errMsg := ""
+    errLog := ""
     thumbFile := ""
 
     Loop Parse text, "`n", "`r" {
@@ -427,6 +438,8 @@ ParseProbe(text) {
                     thumbFile := parts[2]
             case "PROBE-ERR":
                 errMsg := parts.Length > 1 ? parts[2] : "unknown error"
+            case "PROBE-LOG":
+                errLog .= (parts.Length > 1 ? parts[2] : "") "`n"
             case "FMT":
                 ; FMT|id|ext|height|fps|vcodec|acodec|size|exact|kind|bitrate
                 if parts.Length < 10
@@ -443,7 +456,8 @@ ParseProbe(text) {
 
     if errMsg != "" {
         TitleText.Text := "Fetch failed"
-        DetailText.Text := errMsg
+        ; A known problem gets its hint; anything else shows yt-dlp's own message.
+        DetailText.Text := FailureHint(errLog, ProbeSite, ProbeBrowser, errMsg)
         SetStatus("Fetch failed")
         EstText.Text := "Estimated size: -"
         return
@@ -1001,7 +1015,7 @@ SiteName(url) {
     return "The site"
 }
 
-FailureHint(logText, site, browser := "") {
+FailureHint(logText, site, browser := "", fallback := "See the log below for details.") {
     ; Cookie errors end the run before anything is fetched, so they come first.
     ; yt-dlp says "Chrome" in the copy error for every Chromium browser.
     name := BrowserName(browser)
@@ -1011,6 +1025,10 @@ FailureHint(logText, site, browser := "") {
         return name " is still open - close it completely (check the system tray), then try again."
     if InStr(logText, "could not find") && InStr(logText, "cookies database")
         return "No " name " cookies were found - is it installed, and logged in to the site?"
+    ; Asked too often. Trying again straight away tends to make the limit last longer.
+    if InStr(logText, "HTTP Error 429") || InStr(logText, "Too Many Requests") || InStr(logText, "rate-limited")
+        return site " is limiting requests from this network - wait a while"
+            . (browser = "" ? ", or set Cookies from to your browser." : ", then try again.")
     if InStr(logText, "HTTP Error 403")
         return site " blocked the stream - press Update yt-dlp, then try again."
     if InStr(logText, "No supported JavaScript runtime")
@@ -1018,7 +1036,9 @@ FailureHint(logText, site, browser := "") {
     if InStr(logText, "Requested format is not available")
         return "This video does not offer that format - press Fetch info to see what it has."
     if InStr(logText, "Sign in to confirm")
-        return site " is asking for sign-in - set Cookies from to your browser."
+        return browser = ""
+            ? site " is asking for sign-in - set Cookies from to your browser."
+            : site " is still asking for sign-in - log in to it in " name ", or wait a while and try again."
     if InStr(logText, "Unsupported URL") || InStr(logText, "is not a valid URL")
         return "That URL is not one yt-dlp can handle."
     if InStr(logText, "Private video") || InStr(logText, "Video unavailable")
@@ -1027,7 +1047,7 @@ FailureHint(logText, site, browser := "") {
         return "ffmpeg is missing - press Get Tools."
     if InStr(logText, "could not find") && InStr(logText, "cookies")
         return "Those browser cookies could not be read - close the browser, or pick None."
-    return "See the log below for details."
+    return fallback
 }
 
 CheckTools() {
@@ -1430,7 +1450,8 @@ ProbeScriptText() {
         "    [Parameter(Mandatory = $true)][string]$Url,",
         "    [Parameter(Mandatory = $true)][string]$Out,",
         "    [string]$Js = 'node',",
-        "    [string]$Thumb = ''",
+        "    [string]$Thumb = '',",
+        "    [string]$Cookies = ''",
         ")",
         "",
         "$ErrorActionPreference = 'Stop'",
@@ -1441,12 +1462,22 @@ ProbeScriptText() {
         "",
         "try {",
         "    $a = @('--js-runtimes', $Js, '--no-playlist', '-J')",
+        "    if ($Cookies) { $a += @('--cookies-from-browser', $Cookies) }",
         "    # yt-dlp prints warnings to stderr even when it succeeds, and 5.1 turns",
         "    # each one into a terminating error under Stop, so only here it is relaxed.",
+        "    # Its stderr is kept, apart from the JSON, so a failure can say why.",
         "    $ErrorActionPreference = 'Continue'",
-        "    $raw = & $Exe @a $Url 2>$null",
+        "    $all = @(& $Exe @a $Url 2>&1)",
         "    $ErrorActionPreference = 'Stop'",
-        "    if ($LASTEXITCODE -ne 0 -or -not $raw) { throw 'yt-dlp could not read that URL' }",
+        "    $raw = @($all | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] })",
+        "    $errs = @($all | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() })",
+        "    if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) {",
+        "        foreach ($e in $errs) { Emit ('PROBE-LOG|' + (Clean $e)) }",
+        "        # yt-dlp's last ERROR line, without the [site] video-id: in front.",
+        "        $last = @($errs | Where-Object { $_ -match '^ERROR:' }) | Select-Object -Last 1",
+        "        if ($last) { throw ($last -replace '^ERROR:\s*(\[[^\]]+\]\s*[^\s:]+:\s*)?', '') }",
+        "        throw 'yt-dlp could not read that URL'",
+        "    }",
         "    $d = ($raw -join '') | ConvertFrom-Json",
         "    Emit ('TITLE|' + (Clean $d.title))",
         "    Emit ('DURATION|' + $d.duration)",

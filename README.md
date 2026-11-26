@@ -103,6 +103,11 @@ and the subtitle languages all come from this step.
 A playlist URL is probed with `--no-playlist`, so the info and estimate describe the **first video
 only**, even with **Whole playlist** ticked.
 
+Fetch info uses the **Cookies from** setting, as the download does: with **None** it reads no cookies,
+and with a browser picked it signs in as you, so age-restricted videos and YouTube's bot check work
+here too. If it fails, the line under the title gives the hint from [Troubleshooting](#troubleshooting),
+or yt-dlp's own error message.
+
 ### Options
 
 | Control | Notes |
@@ -223,14 +228,16 @@ Output filenames are `%(title)s.%(ext)s`, or for a playlist
 
 ## Troubleshooting
 
-The status line and the hint under the progress bar name the likely cause on failure. The mapping:
+The status line and the hint under the progress bar name the likely cause on failure; for
+**Fetch info**, the hint goes under the title. The mapping:
 
 | Log contains | Hint | What to do |
 | --- | --- | --- |
+| `HTTP Error 429` / `Too Many Requests` / `rate-limited` | The site is limiting requests from this network | Wait a while (often up to an hour), or set **Cookies from** to your browser. Retrying straight away tends to make the limit last longer |
 | `HTTP Error 403` | The site (named by its host, e.g. `vimeo.com`) blocked the stream | **Update yt-dlp**, then try again |
 | `No supported JavaScript runtime` | No JS runtime found | **Get Tools** |
 | `Requested format is not available` | Video does not offer that format | **Fetch info** to see what it actually has |
-| `Sign in to confirm` | The site wants a sign-in | Set **Cookies from** to your browser |
+| `Sign in to confirm` | The site wants a sign-in (including YouTube's *not a bot* check) | Set **Cookies from** to your browser. If it is already set, log in to the site in that browser, or wait a while |
 | `Unsupported URL` | yt-dlp cannot handle that URL | — |
 | `Private video` / `Video unavailable` | Private, removed, or region-locked | — |
 | `ffmpeg not found` | ffmpeg missing | **Get Tools** |
@@ -261,7 +268,8 @@ its own tools and read format lists.
 
 - **Probe** — PowerShell runs `yt-dlp -J`, then flattens the JSON into pipe-delimited lines
   (`TITLE|`, `DURATION|`, `FMT|id|ext|height|fps|vcodec|acodec|size|exact|kind|bitrate`, `SUB|`,
-  `ASUB|`, `THUMB|`, `PROBE-ERR|`) which the GUI parses. It also downloads the largest **jpg**
+  `ASUB|`, `THUMB|`, `PROBE-ERR|`, and `PROBE-LOG|` for each line yt-dlp wrote to stderr when it
+  failed) which the GUI parses. It also downloads the largest **jpg**
   thumbnail, because AutoHotkey's Picture control is GDI+ and cannot decode webp.
 - **Download** — yt-dlp runs hidden through `cmd.exe` with output redirected to `last_download.log`.
   A 500 ms timer re-reads the tail of that log, scrapes the last percentage and the last
